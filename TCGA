@@ -1,0 +1,718 @@
+---
+title: "TCGA"
+author: "wangy"
+date: "2021/10/7"
+output: html_document
+---
+
+```{r, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+#install TCGAbiolinks
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#BiocManager::install("TCGAbiolinks")
+library(TCGAbiolinks)
+library(dplyr)
+library(DT)
+library(tidyverse)
+library(magrittr)
+library(edgeR)
+library(ggbeeswarm)
+library(ggsignif)
+library(pacman)
+library(ROCR)
+library(verification)
+```
+#set path
+```{r, include=FALSE}
+path = "C:/Users/wangy/Box/YuWang/Progress/TCGA" #真事目录
+datapath = paste(path, "data", sep ="/")
+setwd(path)
+```
+#TCGA biolinks
+```{r,  include=FALSE}
+# You can define a list of samples to query and download providing relative TCGA barcodes.
+#listSamples <- c("TCGA-E9-A1NG-11A-52R-A14M-07","TCGA-BH-A1FC-11A-32R-A13Q-07",
+#                 "TCGA-A7-A13G-11A-51R-A13Q-07","TCGA-BH-A0DK-11A-13R-A089-07")
+
+# Query platform Illumina HiSeq with a list of barcode 
+
+#get 52 cancer ID
+getGDCprojects()$project_id
+
+######get data.category file------
+#Colon adenocarcinoma
+TCGAbiolinks:::getProjectSummary("TCGA-COAD")
+#Rectum adenocarcinoma
+TCGAbiolinks:::getProjectSummary("TCGA-READ")
+
+#下载rna-seq的counts数据
+data.type = "Gene Expression Quantification"
+#下载miRNA数据
+data.type = "miRNA Expression Quantification"
+#下载Copy Number Variation数据
+data.type = "Copy Number Segment"
+#download count:
+workflow.type = 'HTSeq - Counts'
+#download fpkm
+workflow.type = 'HTSeq - FPKM'
+```
+####download colon  counts data
+```{r, include=FALSE}
+#query 
+#for(data_type in c("HTSeq - FPKM-UQ", "HTSeq - Counts"))
+#for colon cancer
+#counts 
+query <- GDCquery(project = "TCGA-COAD", 
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification",
+                  experimental.strategy = "RNA-Seq",
+                 workflow.type= "HTSeq - Counts")
+
+#FPKM
+query2 <- GDCquery(project = "TCGA-COAD", 
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification",
+                  experimental.strategy = "RNA-Seq",
+                 workflow.type= "HTSeq - FPKM-UQ")
+
+# Download a list of barcodes with platform IlluminaHiSeq_RNASeqV2
+#counts
+GDCdownload(query, files.per.chunk = 100)
+
+#FPKM
+GDCdownload(query2, directory = "GDCdata_FPKM", files.per.chunk = 100)
+
+
+# Prepare expression matrix with geneID in the rows and samples (barcode) in the columns
+# rsem.genes.results as values
+dataAssy_counts <- GDCprepare(query, summarizedExperiment = F)
+dataAssy_FPKM <- GDCprepare(query2, directory = "GDCdata_FPKM", summarizedExperiment = F)
+```
+####download rectum  counts data
+```{r, include=FALSE}
+#query 
+#for(data_type in c("HTSeq - FPKM-UQ", "HTSeq - Counts"))
+#for colon cancer
+#counts 
+query3 <- GDCquery(project = "TCGA-READ", 
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification",
+                  experimental.strategy = "RNA-Seq",
+                 workflow.type= "HTSeq - Counts")
+
+#FPKM
+query4 <- GDCquery(project = "TCGA-READ", 
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification",
+                  experimental.strategy = "RNA-Seq",
+                 workflow.type= "HTSeq - FPKM-UQ")
+
+# Download a list of barcodes with platform IlluminaHiSeq_RNASeqV2
+#counts
+GDCdownload(query3, directory = "GDCdata_RE_counts", files.per.chunk = 100)
+
+#FPKM
+GDCdownload(query4, directory = "GDCdata_RE_FPKM", files.per.chunk = 100)
+
+# Prepare expression matrix with geneID in the rows and samples (barcode) in the columns
+# rsem.genes.results as values
+dataAssy_RE_counts <- GDCprepare(query3, directory = "GDCdata_RE_counts", summarizedExperiment = F)
+dataAssy_RE_FPKM <- GDCprepare(query4, directory = "GDCdata_RE_FPKM",  summarizedExperiment = F)
+```
+####download liver  counts data
+```{r, include=FALSE}
+#query 
+#for(data_type in c("HTSeq - FPKM-UQ", "HTSeq - Counts"))
+#for liver cancer
+#counts 
+query5 <- GDCquery(project = "TCGA-LIHC", 
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification",
+                  experimental.strategy = "RNA-Seq",
+                 workflow.type= "HTSeq - Counts")
+
+#FPKM
+query6 <- GDCquery(project = "TCGA-LIHC", 
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification",
+                  experimental.strategy = "RNA-Seq",
+                 workflow.type= "HTSeq - FPKM-UQ")
+
+# Download a list of barcodes with platform IlluminaHiSeq_RNASeqV2
+#counts
+GDCdownload(query5, directory = "GDCdata_LIHC_counts", files.per.chunk = 100)
+
+#FPKM
+GDCdownload(query6, directory = "GDCdata_LIHC_FPKM", files.per.chunk = 100)
+
+# Prepare expression matrix with geneID in the rows and samples (barcode) in the columns
+# rsem.genes.results as values
+dataAssy_LIHC_counts <- GDCprepare(query5, directory = "GDCdata_LIHC_counts", summarizedExperiment = F)
+dataAssy_LIHC_FPKM <- GDCprepare(query6, directory = "GDCdata_LIHC_FPKM",  summarizedExperiment = F)
+```
+####download PAAD  counts data
+```{r, include=FALSE}
+#query 
+#for(data_type in c("HTSeq - FPKM-UQ", "HTSeq - Counts"))
+#for liver cancer
+#counts 
+query7 <- GDCquery(project = "TCGA-PAAD", 
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification",
+                  experimental.strategy = "RNA-Seq",
+                 workflow.type= "HTSeq - Counts")
+
+#FPKM
+query8 <- GDCquery(project = "TCGA-PAAD", 
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification",
+                  experimental.strategy = "RNA-Seq",
+                 workflow.type= "HTSeq - FPKM-UQ")
+
+# Download a list of barcodes with platform IlluminaHiSeq_RNASeqV2
+#counts
+GDCdownload(query7, directory = "GDCdata_PAAD_counts", files.per.chunk = 100)
+
+#FPKM
+GDCdownload(query8, directory = "GDCdata_PAAD_FPKM", files.per.chunk = 100)
+
+# Prepare expression matrix with geneID in the rows and samples (barcode) in the columns
+# rsem.genes.results as values
+dataAssy_PAAD_counts <- GDCprepare(query7, directory = "GDCdata_PAAD_counts", summarizedExperiment = F)
+dataAssy_PAAD_FPKM <- GDCprepare(query8, directory = "GDCdata_PAAD_FPKM",  summarizedExperiment = F)
+```
+####download LUAD/LUSC  counts data
+```{r}
+#query 
+#for(data_type in c("HTSeq - FPKM-UQ", "HTSeq - Counts"))
+#for liver cancer
+#counts 
+query11 <- GDCquery(project = "TCGA-LUSC", 
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification",
+                  experimental.strategy = "RNA-Seq",
+                 workflow.type= "HTSeq - Counts")
+
+#FPKM
+query12 <- GDCquery(project = "TCGA-LUSC", 
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification",
+                  experimental.strategy = "RNA-Seq",
+                 workflow.type= "HTSeq - FPKM-UQ")
+
+# Download a list of barcodes with platform IlluminaHiSeq_RNASeqV2
+#counts
+GDCdownload(query11, directory = "GDCdata_LUSC_counts", files.per.chunk = 100)
+
+#FPKM
+GDCdownload(query12, directory = "GDCdata_LUSC_FPKM", files.per.chunk = 100)
+
+# Prepare expression matrix with geneID in the rows and samples (barcode) in the columns
+# rsem.genes.results as values
+dataAssy_LUSC_counts <- GDCprepare(query11, directory = "GDCdata_LUSC_counts", summarizedExperiment = F)
+dataAssy_LUSC_FPKM <- GDCprepare(query12, directory = "GDCdata_LUSC_FPKM",  summarizedExperiment = F)
+```
+# modify COAD data
+```{r, include=FALSE}
+exp_counts_data = dataAssy_counts %>%
+  filter(str_detect(X1, "^ENSG")) %>% # extract ENSG annotated gene
+  mutate(X1 = gsub("\\..*", "", X1)) %>% #delete ENSG 后面的 ".number" version number
+  rename(ensemble_gene_id = X1)  # rename "X1" to ensemble_gene_id
+  #set_colnames(str_replace(colnames(.), "(-\\w*){3}$", ""))
+
+exp_FPKM_data = dataAssy_FPKM %>%
+  filter(str_detect(X1, "^ENSG")) %>% 
+  mutate(X1 = gsub("\\..*", "", X1)) %>% 
+  rename(ensemble_gene_id = X1)  
+  #set_colnames(str_replace(colnames(.), "(-\\w*){3}$", ""))
+
+#save file
+filename = paste0("TCGA-COAD.RNA.query.counts.RData")
+save(query, dataAssy_counts, file = filename)
+load(filename)
+```
+# modify READ data
+```{r, include=FALSE}
+exp_RE_counts_data = dataAssy_RE_counts %>%
+  filter(str_detect(X1, "^ENSG")) %>% # extract ENSG annotated gene
+  mutate(X1 = gsub("\\..*", "", X1)) %>% #delete ENSG 后面的 ".number" version number
+  rename(ensemble_gene_id = X1)  # rename "X1" to ensemble_gene_id
+  
+exp_RE_FPKM_data = dataAssy_RE_FPKM %>%
+  filter(str_detect(X1, "^ENSG")) %>% 
+  mutate(X1 = gsub("\\..*", "", X1)) %>% 
+  rename(ensemble_gene_id = X1)  
+
+```
+# modify LIVER data
+```{r, include=FALSE}
+exp_LIHC_counts_data = dataAssy_LIHC_counts %>%
+  filter(str_detect(X1, "^ENSG")) %>% # extract ENSG annotated gene
+  mutate(X1 = gsub("\\..*", "", X1)) %>% #delete ENSG 后面的 ".number" version number
+  rename(ensemble_gene_id = X1)  # rename "X1" to ensemble_gene_id
+  
+exp_LIHC_FPKM_data = dataAssy_LIHC_FPKM %>%
+  filter(str_detect(X1, "^ENSG")) %>% 
+  mutate(X1 = gsub("\\..*", "", X1)) %>% 
+  rename(ensemble_gene_id = X1)  
+
+```
+# modify PAAD data
+```{r, include=FALSE}
+exp_LUSC_counts_data = dataAssy_LUSC_counts %>%
+  filter(str_detect(X1, "^ENSG")) %>% # extract ENSG annotated gene
+  mutate(X1 = gsub("\\..*", "", X1)) %>% #delete ENSG 后面的 ".number" version number
+  rename(ensemble_gene_id = X1)  # rename "X1" to ensemble_gene_id
+  
+exp_PAAD_FPKM_data = dataAssy_PAAD_FPKM %>%
+  filter(str_detect(X1, "^ENSG")) %>% 
+  mutate(X1 = gsub("\\..*", "", X1)) %>% 
+  rename(ensemble_gene_id = X1)  
+
+```
+#change FPKM value by log2 to normal distribution; counts don't need change
+```{r, include=FALSE}
+#data_type == "HTSeq - FPKM-UQ"
+exp_FPKM_data_LOG2 <- exp_FPKM_data 
+exp_FPKM_data_LOG2[,-1] <- log2(exp_FPKM_data[,-1] + 1)
+
+exp_RE_FPKM_data_LOG2 <- exp_RE_FPKM_data 
+exp_RE_FPKM_data_LOG2[,-1] <- log2(exp_RE_FPKM_data[,-1] + 1)
+```
+#extract SGLT2 gene by ENSG (ENSG00000140675) id through ensemble website FROM COAD
+```{r, include=FALSE}
+SGLT2_exp_counts_data<- exp_counts_data %>%
+  filter(ensemble_gene_id == "ENSG00000140675") %>%
+  mutate(symbol = "SGLT2") %>%
+  dplyr::select(symbol, starts_with("TCGA-"))
+
+SGLT2_exp_fpkm_data<- exp_FPKM_data_LOG2 %>%
+  filter(ensemble_gene_id == "ENSG00000140675") %>%
+  mutate(symbol = "SGLT2") %>%
+  dplyr::select(symbol, starts_with("TCGA-"))
+
+#SGLT2_exp_data <- exp_data[exp_data$ensemble_gene_id == "ENSG00000140675",] 
+#SGLT2_exp_data$symbol <- c("SGLT2")
+#SGLT2_exp_data2 <- SGLT2_exp_data %>% dplyr::select(symbol, starts_with("TCGA-"))
+write.table(SGLT2_exp_data, "C:/Users/wangy/Box/YuWang/Progress/TCGA/SGLT2_count_exp_data", row.names = f, sep = "\t", quote = F)
+```
+#extract SGLT2 gene by ENSG (ENSG00000140675) id through ensemble website FROM READ
+```{r, include=FALSE}
+SGLT2_exp_RE_counts_data<- exp_RE_counts_data %>%
+  filter(ensemble_gene_id == "ENSG00000140675") %>%
+  mutate(symbol = "SGLT2") %>%
+  dplyr::select(symbol, starts_with("TCGA-"))
+
+SGLT2_exp_RE_fpkm_data<- exp_RE_FPKM_data_LOG2 %>%
+  filter(ensemble_gene_id == "ENSG00000140675") %>%
+  mutate(symbol = "SGLT2") %>%
+  dplyr::select(symbol, starts_with("TCGA-"))
+```
+#extract SGLT2 gene by ENSG (ENSG00000140675) id through ensemble website LIHC READ
+```{r, include=FALSE}
+SGLT2_exp_LIHC_counts_data<- exp_LIHC_counts_data %>%
+  filter(ensemble_gene_id == "ENSG00000140675") %>%
+  mutate(symbol = "SGLT2") %>%
+  dplyr::select(symbol, starts_with("TCGA-"))
+
+#SGLT2_exp_LIHC_fpkm_data<- exp_LIHC_FPKM_data_LOG2 %>%
+#  filter(ensemble_gene_id == "ENSG00000140675") %>%
+#  mutate(symbol = "SGLT2") %>%
+#  dplyr::select(symbol, starts_with("TCGA-"))
+```
+#extract SGLT2 gene by ENSG (ENSG00000140675) id through ensemble website PAAD READ
+```{r, include=FALSE}
+SGLT2_exp_PAAD_counts_data<- exp_PAAD_counts_data %>%
+  filter(ensemble_gene_id == "ENSG00000140675") %>%
+  mutate(symbol = "SGLT2") %>%
+  dplyr::select(symbol, starts_with("TCGA-"))
+
+#SGLT2_exp_RE_fpkm_data<- exp_RE_FPKM_data_LOG2 %>%
+# filter(ensemble_gene_id == "ENSG00000140675") %>%
+#  mutate(symbol = "SGLT2") %>%
+#  dplyr::select(symbol, starts_with("TCGA-"))
+```
+# gene annotation
+```{r, include=FALSE}
+ensembl <- biomaRt::useEnsembl("ensembl", dataset = "hsapiens_gene_ensembl")
+genes_info <- biomaRt::getBM(attributes = c("ensembl_gene_id", "external_gene_name"), filters = "ensembl_gene_id", values= exp_counts_data$ensemble_gene_id, mart = ensembl)
+
+#symbol annotation
+exp_data_final1 <- inner_join(exp_data, genes_info, by = "ensembl_gene_id", keep =F) %>%
+  unite("name_id", external_gene_name, ensembl_gene_id, sep ="|", remove = T) %>%
+  rename("symbol" = 1)
+```
+# RNA differential expression analysis IN COAD
+```{r, include=FALSE}
+projecPath = "/user/wangy/xxx"
+resltpath = paste(projecPath, "results", sep = "/")
+
+exp_counts_data_DE <- exp_counts_data %>% 
+  column_to_rownames("ensemble_gene_id")
+
+exp_counts_data_T <- exp_counts_data_DE %>% dplyr::select(str_which(colnames(.), "-01A-"))
+nT <- ncol(exp_counts_data_T)
+exp_counts_data_N <- exp_counts_data_DE %>% dplyr::select(str_which(colnames(.), "-11A-"))
+nN <- ncol(exp_counts_data_N)
+
+#merge
+exp_counts_data_final <- cbind(exp_counts_data_N, exp_counts_data_T)
+sampleLabel <- factor(c(rep("NT", nN), rep("COAD", nT)), levels = c("NT", "COAD"))
+
+# target gene "SLC5A2 == SGTL2"
+target = "ENSG00000140675"
+symbol = "SLC5A2"
+```
+# RNA differential expression COAD matched normal
+```{r, include=FALSE}
+#extract participant ID in tumor
+exp_counts_data_T2 <- exp_counts_data_T %>%
+  set_colnames(str_sub(colnames(.), 9,12))
+
+#extract participant ID in normal
+exp_counts_data_N2 <- exp_counts_data_N %>%
+  set_colnames(str_sub(colnames(.), 9,12))
+
+#matched ID
+match_id <- intersect(colnames(exp_counts_data_N2), colnames(exp_counts_data_T2))
+
+# tumor sample matched normal
+exp_counts_data_T2_mathced <- exp_counts_data_T2[,c(match_id)]
+# tumor samples exclude mtached normal
+exp_counts_data_T2_no_mathced <- exp_counts_data_T2[, (colnames(exp_counts_data_T2) != c(match_id))]
+
+```
+# RNA differential expression analysis IN READ
+```{r, include=FALSE}
+
+exp_RE_counts_data_DE <- exp_RE_counts_data %>% 
+  column_to_rownames("ensemble_gene_id")
+
+exp_RE_counts_data_T <- exp_RE_counts_data_DE %>% dplyr::select(str_which(colnames(.), "-01A-"))
+nT_RE <- ncol(exp_RE_counts_data_T)
+exp_RE_counts_data_N <- exp_RE_counts_data_DE %>% dplyr::select(str_which(colnames(.), "-11A-"))
+nN_RE <- ncol(exp_RE_counts_data_N)
+
+#merge
+exp_RE_counts_data_final <- cbind(exp_RE_counts_data_N, exp_RE_counts_data_T)
+sampleLabel <- factor(c(rep("NT", nN_RE), rep("READ", nT_RE)), levels = c("NT", "READ"))
+
+```
+# RNA differential expression analysis IN LIHC
+```{r, include=FALSE}
+
+exp_LIHC_counts_data_DE <- exp_LIHC_counts_data %>% 
+  column_to_rownames("ensemble_gene_id")
+
+exp_LIHC_counts_data_T <- exp_LIHC_counts_data_DE %>% dplyr::select(str_which(colnames(.), "-01A-"))
+nT_LIHC <- ncol(exp_LIHC_counts_data_T)
+exp_LIHC_counts_data_N <- exp_LIHC_counts_data_DE %>% dplyr::select(str_which(colnames(.), "-11A-"))
+nN_LIHC <- ncol(exp_LIHC_counts_data_N)
+
+#merge
+exp_LIHC_counts_data_final <- cbind(exp_LIHC_counts_data_N, exp_LIHC_counts_data_T)
+sampleLabel_LIHC <- factor(c(rep("NT", nN_LIHC), rep("LIHC", nT_LIHC)), levels = c("NT", "LIHC"))
+
+```
+# RNA differential expression analysis IN PAAD
+```{r, include=FALSE}
+
+exp_PAAD_counts_data_DE <- exp_PAAD_counts_data %>% 
+  column_to_rownames("ensemble_gene_id")
+
+exp_LUSC_counts_data_T <- exp_LUSC_counts_data %>% dplyr::select(str_which(colnames(.), "-01A-"))
+nT_LUSC <- ncol(exp_LUSC_counts_data_T)
+exp_LUSC_counts_data_N <- exp_LUSC_counts_data %>% dplyr::select(str_which(colnames(.), "-11A-"))
+nN_LUSC <- ncol(exp_LUSC_counts_data_N)
+
+#merge
+exp_PAAD_counts_data_final <- cbind(exp_PAAD_counts_data_N, exp_PAAD_counts_data_T)
+sampleLabel_PAAD <- factor(c(rep("NT", nN_PAAD), rep("PAAD", nT_PAAD)), levels = c("NT", "PAAD"))
+
+```
+####use edgeR analysis-----------
+#COAD 
+```{r, include=FALSE}
+#construct DEGList
+dge <- DGEList(counts = exp_counts_data_final, group = sampleLabel)
+
+#filter low abundance
+keep = rowSums(cpm(dge) > 0.5) > nN #在至少较少组样本量中的表达量cpm>0.5 (count per million)
+dge_filter <- dge[keep, keep.lib.sizes = FALSE]
+
+#TMM normalization
+#No filter
+dge_norm = calcNormFactors(dge)
+
+#after filter
+dge_norm = calcNormFactors(dge_filter) # default method = 'TMM'
+
+#estimating the dispersion
+design =model.matrix(~sampleLabel)
+y <- estimateDisp(dge_norm, design, robust = TRUE)
+
+#DEA
+fit <- glmQLFit(y, design)
+res <- glmQLFTest(fit)
+result <- topTags(res, n= Inf)$table
+result[target,] #target gene
+
+write.csv(data.frame(symbol = rownames(result), result, check.names = F), "Rna_DEA_result.csv")
+
+#significant results
+sig_result <- subset(result, abs(logFC) >1 & FDR < 0.05)
+
+# got logCPM to plot
+logcpm <-cpm(dge_norm, log = TURE,  prior.count = 1)
+
+#plot of data.frame
+dataforplot <- data.frame(Exp = logcpm[target,], Group= sampleLabel)
+
+#plot beeswarm
+p <- ggplot(dataforplot, aes(x= Group, y=Exp, col= Group))+
+  geom_beeswarm(size =1, alpha = 0.5)+ # cex to set 分散的宽度， alpha to set 点的透明度。
+  stat_summary(fun = median,  geom = "point", size= 3, col = "black")+ #median处画一个点
+  stat_summary(fun = median, fun.min = median, fun.max = median, geom = "crossbar", size = 0.3, width = 0.2, col= "black") + #median处加一条横线， 注意三个参数都是“median”
+  stat_summary(fun.data = function(x) median_hilow(x, 0.5), geom = "errorbar", width= 0.2, col ="black")+
+  theme_classic() +
+  theme(legend.position = 0)
+ 
+ ggsave(paste0(symbol, "_beeswarm.pdf"), width= 2, height =3)
+```
+#####use edgeR analysis------------
+#READ 
+```{r, include=FALSE}
+#construct DEGList
+dge_RE <- DGEList(counts = exp_RE_counts_data_final, group = sampleLabel)
+
+#TMM normalization
+#No filter
+dge_norm_RE = calcNormFactors(dge_RE)
+
+#estimating the dispersion
+design_RE =model.matrix(~sampleLabel)
+y <- estimateDisp(dge_norm_RE, design_RE, robust = TRUE)
+
+#DEA
+fit_re <- glmQLFit(y, design_RE)
+res_re <- glmQLFTest(fit_re)
+result_RE <- topTags(res_re, n= Inf)$table
+result_RE[target,] #target gene
+
+#significant results
+sig_result <- subset(result, abs(logFC) >1 & FDR < 0.05)
+
+# got logCPM to plot
+logcpm_RE <-cpm(dge_norm_RE, log = TRUE,  prior.count = 1)
+
+#plot of data.frame
+dataforplot_RE <- data.frame(Exp = logcpm_RE[target,], Group= sampleLabel)
+
+#plot beeswarm
+p_RE <- ggplot(dataforplot_RE, aes(x= Group, y=Exp, col= Group))+
+  geom_beeswarm(size =1, alpha = 0.5)+ 
+  stat_summary(fun = median,  geom = "point", size= 3, col = "black")+ 
+  stat_summary(fun = median, fun.min = median, fun.max = median, geom = "crossbar", size = 0.3, width = 0.2, col= "black") + 
+  stat_summary(fun.data = function(x) median_hilow(x, 0.5), geom = "errorbar", width= 0.2, col ="black")+
+  theme_classic() +
+  theme(legend.position = 0)
+ 
+```
+#####use edgeR analysis------------
+#READ 
+```{r, include=FALSE}
+#construct DEGList
+dge_RE <- DGEList(counts = exp_RE_counts_data_final, group = sampleLabel)
+
+#TMM normalization
+#No filter
+dge_norm_RE = calcNormFactors(dge_RE)
+
+#estimating the dispersion
+design_RE =model.matrix(~sampleLabel)
+y <- estimateDisp(dge_norm_RE, design_RE, robust = TRUE)
+
+#DEA
+fit_re <- glmQLFit(y, design_RE)
+res_re <- glmQLFTest(fit_re)
+result_RE <- topTags(res_re, n= Inf)$table
+result_RE[target,] #target gene
+
+#significant results
+sig_result <- subset(result_RE, abs(logFC) >1 & FDR < 0.05)
+
+# got logCPM to plot
+logcpm_RE <-cpm(dge_norm_RE, log = TRUE,  prior.count = 1)
+
+#plot of data.frame
+dataforplot_RE <- data.frame(Exp = logcpm_RE[target,], Group= sampleLabel)
+
+#plot beeswarm
+p_RE <- ggplot(dataforplot_RE, aes(x= Group, y=Exp, col= Group))+
+  geom_beeswarm(size =1, alpha = 0.5)+ 
+  stat_summary(fun = median,  geom = "point", size= 3, col = "black")+ 
+  stat_summary(fun = median, fun.min = median, fun.max = median, geom = "crossbar", size = 0.3, width = 0.2, col= "black") + 
+  stat_summary(fun.data = function(x) median_hilow(x, 0.5), geom = "errorbar", width= 0.2, col ="black")+
+  theme_classic() +
+  theme(legend.position = 0)
+ 
+```
+#####use edgeR analysis------------
+#LIHC
+```{r, include=FALSE}
+#construct DEGList
+dge_LIHC <- DGEList(counts = exp_LIHC_counts_data_final, group = sampleLabel_LIHC)
+
+#TMM normalization
+#No filter
+dge_norm_LIHC = calcNormFactors(dge_LIHC)
+
+#estimating the dispersion
+design_LIHC =model.matrix(~sampleLabel_LIHC)
+y <- estimateDisp(dge_norm_LIHC, design_LIHC, robust = TRUE)
+
+#DEA
+fit_LIHC <- glmQLFit(y, design_LIHC)
+res_LIHC <- glmQLFTest(fit_LIHC)
+result_LIHC <- topTags(res_LIHC, n= Inf)$table
+result_LIHC[target,] #target gene
+
+#significant results
+sig_result_LIHC <- subset(result_LIHC, abs(logFC) >1 & FDR < 0.05)
+
+# got logCPM to plot
+logcpm_LIHC <-cpm(dge_norm_LIHC, log = TRUE,  prior.count = 1)
+
+#plot of data.frame
+dataforplot_LIHC <- data.frame(Exp = logcpm_LIHC[target,], Group= sampleLabel_LIHC)
+
+#plot beeswarm
+p_LIHC <- ggplot(dataforplot_LIHC, aes(x= Group, y=Exp, col= Group))+
+  geom_beeswarm(size =1, alpha = 0.5)+ 
+  stat_summary(fun = median,  geom = "point", size= 3, col = "black")+ 
+  stat_summary(fun = median, fun.min = median, fun.max = median, geom = "crossbar", size = 0.3, width = 0.2, col= "black") + 
+  stat_summary(fun.data = function(x) median_hilow(x, 0.5), geom = "errorbar", width= 0.2, col ="black")+
+  theme_classic() +
+  theme(legend.position = 0)
+ 
+```
+#####use edgeR analysis------------
+#PAAD
+```{r, include=FALSE}
+#construct DEGList
+dge_PAAD <- DGEList(counts = exp_PAAD_counts_data_final, group = sampleLabel_PAAD)
+
+#TMM normalization
+#No filter
+dge_norm_PAAD = calcNormFactors(dge_PAAD)
+
+#estimating the dispersion
+design_PAAD =model.matrix(~sampleLabel_PAAD)
+y4 <- estimateDisp(dge_norm_PAAD, design_PAAD, robust = TRUE)
+
+#DEA
+fit_PAAD <- glmQLFit(y4, design_PAAD)
+res_PAAD <- glmQLFTest(fit_PAAD)
+result_PAAD <- topTags(res_PAAD, n= Inf)$table
+result_PAAD[target,] #target gene
+
+#significant results
+sig_result_PAAD <- subset(result_PAAD, abs(logFC) >1 & FDR < 0.05)
+
+# got logCPM to plot
+logcpm_PAAD <-cpm(dge_norm_PAAD, log = TRUE,  prior.count = 1)
+
+#plot of data.frame
+dataforplot_PAAD <- data.frame(Exp = logcpm_PAAD[target,], Group= sampleLabel_PAAD)
+
+#plot beeswarm
+p_PAAD <- ggplot(dataforplot_PAAD, aes(x= Group, y=Exp, col= Group))+
+  geom_beeswarm(size =1, alpha = 0.5)+ 
+  stat_summary(fun = median,  geom = "point", size= 3, col = "black")+ 
+  stat_summary(fun = median, fun.min = median, fun.max = median, geom = "crossbar", size = 0.3, width = 0.2, col= "black") + 
+  stat_summary(fun.data = function(x) median_hilow(x, 0.5), geom = "errorbar", width= 0.2, col ="black")+
+  theme_classic() +
+  theme(legend.position = 0)
+ 
+```
+#plot ROC curve
+```{r, plot}
+#set work path
+projetpath = ""
+rocpath = paste(projectpath, "ROC", sep = "/")
+datapath =  paste(projetpath, "data", sep= "/")
+setwd(datapath)
+
+#FPKM data
+exp_data_fpkm <- target_fpkm-uq_allsamples.txt
+
+#extract case/control samples
+exp_data_fpkm <- exp_data_fpkm[,str_detect(colnames(exp_data_fpkm), "-01A|-11A")]
+
+#set case lable to 1, control lables to 0
+labels <- ifelse(grepl("-01A", colnames(exp_data_fpkm), 1, 0))
+
+#change table data to numeric
+predictions <- as.numeric(exp_data_fpkm)
+
+###### ROC calculate --------
+
+#contruct prediction file
+pre <- prediction(predictions, labels)
+#calculate true positive and false positive rate
+perf <- performance(pred, "tpr", "fpr")
+# calulate AUC
+res <- roc.area(labels, predictions)
+res$A # AUC 
+res$p.vales 
+
+###### ROC plot --------
+par(mar = c(3.5, 3.5 ,1, 1), mgp = c(2, 0.6, 0), las =1)
+plot(perf, col = "#FF0000", lwd = 3, xlab = "xxx", ylab = "xxx", cex.lab = 1.2, xaxs = "i", yaxs = "i") # xaxs = "i", yaxs = "i" set start point from 0
+abline(0, 1, lty =2, lwd =2, col ="#0026FA")
+
+```
+# download clinical data and survival data form this link
+#https://xenabrowser.net/datapages/?cohort=TCGA%20Liver%20Cancer%20(LIHC)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443
+```{r, include=FALSE}
+####read clinical data 
+clinic_data <- read.table("COAD/COAD_clinicalMatrix", header = T, sep = "\t")
+#read survival data
+surv_data <- read.table("COAD/survival_COAD.txt", header = T, sep = "\t")
+#merge
+clinic_data <- merge(clinic_data, surv_data, by.x ="sampleID", by.y = "sample")
+
+#### read FPKM 
+#FPKM-UQ
+exp_data_fpkm_CO <- exp_FPKM_data %>%
+  column_to_rownames("ensemble_gene_id") %>%
+  dplyr::select(contains("-01A-")) %>%
+set_colnames(str_replace(colnames(.), "A(-\\w*){3}$", ""))
+
+#Counts for difference analysis
+exp_data_counts <- read("LIHC_portal_RNA_counts.txt", h = T, sep = "\t", check.names = F) %>%
+  column_to_rownames("ensembl_gene_id") %>%
+  dplyr::select(ends_with("-01A")) %>%
+  set_colnames(gsub("A$", "", colnames(.))) # remove letter on the end
+
+#filter clinical data
+clinic_data %<>%
+  filter(OS.time >0 & !is.na(OS)) %>%
+  droplevels
+common <- intersect(as.character(as.matrix(clinic_data$samplesID)), colnames(exp_data_fpkm))
+length(common)
+
+#clinic data after filtering
+clinic_data %<>% filter(sampleID %in% common)
+#FPKM data after filtering
+exp_data_fpkm <- exp_data_fpkm["ENSGXXXXXXX", common]
+#counts after filtering
+exp_data_counts <- exp_data_counts[, common]
+
+```
+
+
+## R Markdown
+
+
