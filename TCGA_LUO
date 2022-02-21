@@ -1,0 +1,887 @@
+
+###################################################################################
+#############Explore SGLT2 expression in TCGA data sets (CRC, liver, pancreatic)#############################
+#######SGLT2 expression by clinical variables: histology, stage, grade, RFS, OS
+#######SGLT2 by race/ethnicity (white, AA, Asian)/sex 
+#######genes correlated with SGLT2 (pathways, correlation network)
+##################################################################################
+
+# BiocManager::install("GEOquery")
+# BiocManager::install("maftools")
+# BiocManager::install("GSEABase")
+# BiocManager::install("GSAR")
+# BiocManager::install("GSVA")
+# BiocManager::install("TCGAbiolinks")
+
+library(cgdsr)
+library(tidyr)
+library(tidyverse)
+library(data.table)
+library(maftools)
+library(GSEABase)
+library(GSAR)
+library(GSVA)
+
+library(RTCGAToolbox)##query GCGA firehose dat
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+
+library(dplyr)
+library(kableExtra)
+library(ggplot2)
+library(GGally)
+library(rlang)
+library(readxl)
+library(limma)
+library(corrplot)
+library(GEOquery)
+library(gridExtra)
+library("maptools")  # point labels without overlaps pointLabel()
+library("cBioPortalData")
+library(msigdbr) ##Broad MSigDB gene sets , see descriptions of gene sets on https://www.gsea-msigdb.org/gsea/msigdb/collections.jsp
+#help(package="msigdbr")
+library("org.Hs.eg.db")
+library("GOstats")
+library("GO.db")
+library(hrbrthemes)
+library(viridis)
+
+#source("W:/Jingqin/Rcode/useful.code.r")
+#source("W:/Jingqin/Rcode/Survival.Function.r")##I have copied relevant sub_functions here
+
+
+#######Set working directory################
+wd = "W:/Jingqin/YinCao/SGLT2/Analysis10282021"
+dir.create(wd)
+setwd(wd)
+list.files(wd)
+####################################
+
+
+#######Provide gene symbol for analysis#########
+GeneSymbol = c("SGLT1","SGLT2")
+#####################################
+
+
+
+#####################################Collection of functions ##################################
+
+###plot violin (inset with boxplots) and boxplots overlaid with data points
+Plot_violin_boxplot =  function(data=clinic, geneID="SGLT2",covariateID="Stage", cohort="TCGA CRC")
+{
+  
+  require(dplyr)
+  require(hrbrthemes)
+  require(viridis)
+  require(ggpubr)
+
+    ##make a copy of the covariate under a common variable ID "name"
+  data$name = data[,covariateID]
+  ##remove the obs with missing covariate
+  data = data %>% dplyr::filter(!is.na(name)) 
+  
+  ##kruskal wallis test on SGLT2
+  p = kruskal.test(as.formula(paste(geneID,"~name",sep="")),dat=data)$p.value
+  
+  pairwise.wilcox = p
+  
+  if(nlevels(factor(data$name))>=3)
+  {
+    pairwise.wilcox = pairwise.wilcox.test(x=data$SGLT2,g=data$name,p.adjust.method="none",paired=F)
+    print(pairwise.wilcox)
+    write.csv(pairwise.wilcox$p.value,file=paste(cohort, "_",geneID,"_pairwiseWilcox.csv",sep=""),row.names=T)
+  }
+  
+  
+  ##sample size
+  sample_size = data %>% dplyr::group_by(name) %>% dplyr::summarize(num=n())
+  
+  # Plot SGLT2
+  data = data %>%
+    left_join(sample_size) %>%
+    mutate(myaxis = paste0(name, "\n", "n=", num))
+  
+  data %>% ggplot( aes_string(x="myaxis", y=geneID, fill="name")) +
+    geom_violin(width=1.4) +
+    geom_boxplot(width=0.1, color="grey", alpha=0.5) +
+    scale_fill_viridis(discrete = TRUE) +
+    theme_ipsum() +
+    theme(
+      legend.position="none",
+      plot.title = element_text(size=12,hjust = 0.5),
+      axis.title.y = element_text(color="black", size=12, face="bold",hjust=0.5)
+    ) +
+    stat_compare_means(label.x.npc = "middle")+
+    ggtitle(cohort) +ylab(paste(geneID," RNAseq Z-score",sep=""))+
+    xlab("")
+    
+    ggsave(paste(cohort,"_",geneID,"_",covariateID,"_violin.png"),height=8,width=8)
+    
+    ##plot only box plots overlaid with data points
+    
+    p <- ggboxplot(data, x = "name", y = geneID,
+                   color = "name", palette = "jco",
+                   add = "jitter")
+    #  Add p-value
+    p + stat_compare_means(label.x.npc = "middle")+xlab("")+ylab(paste(geneID," RNAseq Z-score",sep=""))+theme(legend.position="none",plot.title = element_text(size=12,hjust = 0.5),axis.title.y = element_text(color="black", size=12, face="bold",hjust=0.5))+ggtitle(cohort)
+    ggsave(paste(cohort,"_",geneID,"_",covariateID,"_boxplot.png"),height=8,width=8)
+    
+    
+    
+    return(pairwise.wilcox)
+    
+}
+
+
+#####Survival analysis wrap up Function (the function will call two functions below)########
+SurvivalAnalysis <- function(dat=clinic, geneID="SGLT2", survID="OS_MONTHS",eventID="OS_STATUS",cohort="CRC",xlab="Overall Survival (months)",legend.loc="topright")
+{
+  require(rms)
+  
+  survID2 = strsplit(survID,"_")[[1]][1]
+  
+  dat[,eventID] = as.numeric(as.character(factor(dat[,eventID],labels=c(0,1))))
+  
+  #print(table(dat[,eventID]))
+  
+  #dat= dat %>% dplyr::mutate(SGLT2_2grp=factor(ifelse(SGLT2<=median(SGLT2,na.rm=T), "Low","High"),levels=c("Low","High")))
+  #dat = dat%>% dplyr::mutate(SGLT2_4grp = factor(cut2(SGLT2, g=4)))
+  
+  dat$gene_2grp=factor(ifelse(dat[,geneID]<=median(dat[,geneID],na.rm=T), "Low","High"),levels=c("Low","High"))
+  dat$gene_4grp = factor(cut2(dat[,geneID], g=4))
+  
+  ##sometimes, the data is very skewed that Q1 and Q2 overlapped completely that only 3 grps
+  if(nlevels(dat$gene_4grp)==4) dat$gene_4grp = factor(dat$gene_4grp,labels=c("Q1","Q2","Q3","Q4"))
+  if(nlevels(dat$gene_4grp)==3) dat$gene_4grp = factor(dat$gene_4grp,labels=c("Low","Med","high"))
+  
+  
+  
+  png(paste(cohort,"_",survID2,"_",geneID,"_2grp.png",sep=""),res=300, unit="in", height=10,width=10)
+  res_2grp <- LogRank.Pvalue.KM(OS=dat[,survID], Event=dat[,eventID],xx=dat$gene_2grp,xlab=xlab,ylab="Survival Probability",legend.loc=legend.loc,main=paste(cohort,geneID,sep=":"))
+  dev.off()
+  
+  png(paste(cohort,"_",survID2,"_",geneID,"_4grp.png",sep=""),res=300, unit="in", height=10,width=10)
+  res_4grp <- LogRank.Pvalue.KM(OS=dat[,survID], Event=dat[,eventID],xx=dat$gene_4grp,xlab=xlab,ylab="Survival Probability",legend.loc=legend.loc,main=paste(cohort,geneID,sep=":"))
+  dev.off()
+  
+  
+  med.surv <- rbind(data.frame(Gene=geneID,grouping="2grp",res_2grp$median.survival),data.frame(Gene=geneID,grouping="4grp",res_4grp$median.survival))
+  
+  write.table(med.surv,file=paste(cohort,"_",survID2,"_", geneID,"_medianSurvival.csv",sep=""),sep=",",col.names=T,row.names=F)
+  
+  hr <- rbind(data.frame(Gene=geneID,grouping="2grp",res_2grp$HR),data.frame(Gene="SGLT2",grouping="4grp",res_4grp$HR))
+  write.table(hr,file=paste(cohort,"_",survID2,"_", geneID,"_HR.csv",sep=""),sep=",",col.names=T,row.names=F)
+  
+  pairwise.logrank.p <- Pairwise.LogRank.Pval(dat[,survID], dat[,eventID],dat$gene_4grp)
+  
+  write.table(pairwise.logrank.p,file=paste(cohort,"_",survID2,"_",geneID,"_pairiwse.logrankPvalue.csv",sep=""),sep=",",col.names=T,row.names=F)
+  
+  return(list(med.surv=med.surv,hr=hr, logrank.p=pairwise.logrank.p, res_2grp=res_2grp,res_4grp=res_4grp))
+}
+
+
+###calculate in Cox proportional hazard model hazard ratio and its 95 CI: (25% and 97.5% quantile).
+Coxph.HR.CI <- function(coxph.obj)
+{
+  ###check prop hazard assumption
+  check.assump <- cox.zph(coxph.obj,transform="identity")
+  ProportionalAssumption.p <- check.assump$table[,"p"]
+  #plot(check.assump)
+  #cat("Proportional hazard proportion assumption p=",ifelse(nrow(check.assump$table)==1,check.assump$table[1,"p"],check.assump$table["GLOBAL","p"]),"\n")
+  
+  if(class(coxph.obj)[1]=="coxph")
+  {
+    ####must use coxph() function instead of cph()
+    res0 <- summary(coxph.obj)
+    coef.mat <- res0$coef
+    hr <- coef.mat[,"exp(coef)"]
+    pval <- coef.mat[,"Pr(>|z|)"]
+    if("robust se" %in% colnames(coef.mat))         se.coef <- coef.mat[,"robust se"] else  se.coef <- coef.mat[,"se(coef)"]
+    concord <- res0$concordance
+  }else if(class(coxph.obj)[1]=="cph")
+  {
+    res0 <- Cph.extract(coxph.obj)
+    coef.mat <- as.data.frame(res0)
+    hr <- exp(as.numeric(coef.mat$coef))
+    pval <- coef.mat$p
+    se.coef <- coef.mat$"se(coef)"
+    concord <- NA
+  }else stop("Error:need a coxph or cph object!")
+  
+  low.CI <- hr*exp(-1.96*se.coef)##cof:exp(betahat+/-1.96*S.E(betahat))=hr*exp(+/-S.E(betahat))
+  upper.CI <- hr*exp(1.96*se.coef)
+  out0 <- data.frame(HR=round(hr,4),lower=round(low.CI,4),upper=round(upper.CI,4),Pvalue=pval,SE.coef=se.coef,concordance=concord[1],concordance.SE=concord[2])##also return standard error of coefficient
+  
+  rownames(out0) <- rownames(coef.mat)
+  #rownames(out0) <- sapply(rownames(coef.mat),function(lab0) substr(lab0,3,nchar(lab0)))##since the variable name is usually pre-padded with xx :"xx***"    
+  out0$"95%CI" <- Format.Prob.CI(data.frame(HR=hr,lower=low.CI,upper=upper.CI),dec=2,sep.char="~")
+  # names(out0) <- c("HR","lower","upper","P-value")
+  #out0 <- data.frame(Level=rownames(out0),out0,ProportionalAssumption.p=ProportionalAssumption.p,stringsAsFactors=F,check.names=F)##if output proportional hazard assumption test pvalues
+  out0 <- data.frame(Level=rownames(out0),out0,stringsAsFactors=F,check.names=F)
+  return(out0)      
+}
+
+
+
+LogRank.Pvalue.KM <- function(OS,Event,xx=NULL,strata.var=NULL,file0=NULL,unit="months",plot=T,lty=NULL,col=NULL,legend=T,cutoff=NULL,legend.cex=1.5,col.dat=NULL,level.label=NULL,legend.loc="topright",...)
+{
+  ###OS: survival
+  ###Event: 1/0 for event/non-event
+  ###xx: a numeric vector or a factor, for population survival KM curve, leaving xx=NULL (if xx is factor/character, do log rank & KM; if xx is a numeric vector, do Cox model and then dichotomized by specified cutoff or if cutoff=NULL, by median value and do LogRank & KM)
+  ###strata.var: a character vector, e.g., strata.var=dat$Center
+  ##... some plot arguments (lty,col and lwd,ylab have been given)
+  ##cutoff: if xx is a numeric vector, use the specified cutoff or if default=NULL, use the median as a cutoff to dichotomize the continuous numerical variable (note: the median is the median of original xx before removing the missing values in the data frame including (OS,Event,xx), the result can be slightly different using the median of original xx or after removing NAs!!! 
+  ##unit="months": Survival units
+  ##if col=NULL, use default
+  ###this function will create a plot but Need to add legend and use dev.print() to save it unless file0 is given not as NULL
+  ###col.dat: a data frame with 2 columns:"Levels"= unique levels in xx (arranged in desired order) and "col" color for each level and "lty", lty for each level, e.g.,col.dat=data.frame(level=c("low","medium","high"),col=1:3) or col.dat=data.frame(Levels=c("NK","NK w/mat","K","BSCC","PSCC","AdSCC","Undiff"),col=1:7), so that the median.surv levels and the col can be maniplulated as desired; 
+  ##level.label: a vector of characters to label each levels in xx, e.g., xx has 2 levels 0/1, use level.label=c("WT","MUT") to label them correctly
+  
+  ##legend.loc= either "topright"/"topleft","bottomleft","bottomright", or =list(x=5,y=0.8)
+  
+  median.surv <- NULL
+  HR <- NULL
+  pval0 <- NULL
+  
+  if(is.null(ylab)) ylab = "Survival Probability"
+  
+  if(missing(xx) |is.null(xx))
+  {
+    ##if no xx value, do the overall median survival estimate and KM curve plot with confidence interval
+    temp0 <- data.frame(OS=OS,Event=Event)
+    temp0 <- na.exclude(temp0)
+    OS <- temp0$OS
+    Event <- temp0$Event 
+    median.surv <- Median.Survival(OS,Event,xx=NULL,strata.var=strata.var)
+    
+    if(plot)
+    {
+      if(is.null(strata.var)) surv.fit0 <- survfit(Surv(OS,Event)~1) else surv.fit0 <- survfit(Surv(OS,Event)~1+strata(strata.var))
+      
+      if(!is.null(file0)) pdf(file0,height=12,width=12)
+      plot(surv.fit0,font=2,font.axis=2,lwd=4,cex=1.5,cex.lab=1.5,cex.axis=1.5,font.lab=2, ...)#xlab="Survival time",ylab="Survival Probability")
+      legend0 <- paste("event/n=",median.surv["events"],"/",median.surv["records"], ";med=",round(median.surv["median"],2), ",95% CI:", round(median.surv["0.95LCL"],2),"~", round(median.surv["0.95UCL"],2),sep="")
+      legend(legend.loc,legend=legend0,col="black",lwd=2,bty="n",cex=legend.cex,text.font=2)
+      if(!is.null(file0)) dev.off()
+      #if(!is.null(file0)) dev.print(postscript,file0)
+    }
+    
+  } else
+  {
+    ###set cutoff as median if default NULL
+    
+    ###remove NAs
+    if(is.null(strata.var)) temp0 <- data.frame(OS=OS,Event=Event,xx=xx) else temp0 <- data.frame(OS=OS,Event=Event,xx=xx,strata.var=strata.var)
+    temp0 <- na.exclude(temp0)
+    OS <- temp0$OS
+    Event <- temp0$Event
+    xx <- temp0$xx
+    if(!is.null(strata.var)) strata.var <- temp0$strata.var
+    
+    ###start survival analysis
+    surv.obj <- Surv(OS,Event)
+    
+    flag <- class(xx)=="integer" & nlevels(factor(xx))<=5 ##sometimes categorical variables are integer coded, e.g., 0/1/2
+    
+    if(is.null(cutoff) & !(class(xx)=="character" |any("factor"%in%class(xx)))) cutoff <- median(xx,na.rm=T) else cutoff <- NA
+    
+    #cat("median cutoff=",cutoff,"\n")
+    
+    ##do cox no matter xx is numeric or character/factor
+    
+    if(length(unique(xx))>1)
+    {
+      if(is.null(strata.var))
+      {
+        coxfit0 <- coxph(surv.obj~xx)
+        HR <- Coxph.HR.CI(coxfit0)
+      }else
+      {
+        coxfit0 <- coxph(surv.obj~xx+strata(strata.var))
+        HR <- Coxph.HR.CI(coxfit0)
+      }
+      
+    }else HR <- data.frame(HR=NA,lower=NA,upper=NA,Pvalue=NA,SE.coef=NA,ProportionalAssumption.p=NA)
+    
+    ##############################
+    ##examine cox proportional hazard
+    #check.assump <- cox.zph(coxfit0,transform="identity")
+    #proportionalAssumption.p <- check.assump$table[,"p"]
+    #print(check.assump)
+    #plot(check.assump)
+    ############################
+    
+    ##do log rank and KM if xx is character/factor
+    #if(class(xx)=="character" |any("factor"%in%class(xx)))##if xx is ordered factor, class(xx) will have 2 components (1) ordered (2) factor
+    if( !(class(xx)=="character" |any("factor"%in%class(xx)) | flag))
+    {
+      xx <- ifelse(xx>cutoff,"2=high","1=low")##if xx is ordered factor, class(xx) will have 2 components (1) ordered (2) factor
+      #xx <- factor(ifelse(xx>cutoff,"high","low"),levels=c("low","high"))##if xx is ordered factor, class(xx) will have 2 components (1) ordered (2) factor
+    }
+    
+    #median.surv <- Median.Survival(OS,Event,xx)
+    #med.surv <- median.surv[,"median"]
+    
+    xx <- factor(as.character(xx))
+    
+    #if(setequal(sort(tolower(levels(xx))),c("high","low","med"))) xx <- factor(xx,levels=c("low","med","high"))
+    #if(setequal(sort(tolower(levels(xx))),c("indeterminate","resistant","sensitive"))) xx <- factor(xx,levels=c("sensitive","indeterminate","resistant"))
+    
+    nlevel <- nlevels(xx)
+    df0 <- nlevel-1
+    
+    if(is.null(strata.var)) fit0 <- survfit(surv.obj~xx) else fit0 <- survfit(surv.obj~xx+strata(strata.var))##fit0 is here
+    
+    
+    if(nlevels(factor(xx))>1)
+    {
+      if(is.null(strata.var)) logrank.test <- survdiff(surv.obj~xx)
+      else {
+        #logrank.test <- survdiff(surv.obj~xx+strat(strata.var))##using !"strat"!, will give the log rank test pvalue comparing all the groups from the combination of xx and starta.var
+        logrank.test <- survdiff(surv.obj~xx+strata(strata.var))##using !"strata"!, will give the stratified log rank test pvalue comparing the groups defined by xx, with stratification of starta.var
+        df0 <- length(logrank.test$n)-1
+        #df0 <- nlevel*nlevels(factor(strata.var))-1##if by strata, the df is the levels of combinations of strata and the risk factor-1 ##this is incorrect if strata.var is present
+      }
+      pval0 <- 1-pchisq(logrank.test$chisq,df=df0)###log rank test p-value
+    } else pval0 <- NA
+    
+    ###when the KM curves cross over, mostly log rank test will not be significant since it's optimal when proportional hazard (ie.KM curves not crossing over), then two stage design
+    ###(R function twostage() in R package TSHRC) may (or may not) be improve the p-value where the log rank test P will be used if it's significant and else do a second-stage hazard ratio test using the proposed method
+    ###copy.xx <- as.numeric(as.character(factor(xx,labels=1:nlevels(factors(xx)))))##need to code xx by numeric levels
+    ###temp.dat <- data.frame(OS=OS,Event=Event,xx=xx)##do not allow missing values
+    ### temp.OS <- twostage(time=temp.dat$OS,delta=temp.dat$Event,group=temp.dat$xx,nboot=500)
+    ### temp.OS["TSPV"]
+    
+    median.surv <- Median.Survival(OS,Event,xx,strata.var=strata.var)
+    #print(median.surv)
+    
+    if(mode(median.surv)!="list") median.surv <- matrix(median.surv,ncol=length(median.surv),dimnames=list(NULL,names(median.surv)))##add this if only 1 group 10/14/2013
+    med.surv <- median.surv[,"median"]
+    total.n <- median.surv[,"n.max"]
+    total.event <- median.surv[,"events"]
+    CI.lower <- median.surv[,"0.95LCL"]
+    CI.upper <- median.surv[,"0.95UCL"]##!!!!
+    
+    if(nrow(median.surv)==1) Levels <- levels(factor(xx)) else Levels <- median.surv$Variable
+    median.surv <- data.frame(Levels,n=total.n,event=total.event,Median=med.surv,CI.lower=CI.lower,CI.upper=CI.upper)
+    
+    ###remove under the Variable column the "xx=" for median.surv data frame and the plot.strata' names
+    
+    if(length(grep("xx=",median.surv$Levels,fixed=T))>=1)
+    {
+      median.surv$Levels <- trim.ws(unlist(lapply(strsplit(as.character(median.surv$Levels),"xx="),function(zz) zz[2])))
+      plot.strata <- trim.ws(unlist(lapply(strsplit(names(fit0$strata),"xx="),function(zz) zz[2])))
+    }
+    
+    ###merge with col.dat to get the desired levels and col in order as specified in col.dat
+    if(!is.null(col.dat))
+    {
+      if(length(col.dat$Levels%n%median.surv$Levels)>=1)##if col.dat is specified, the Levles column must has overlapping levels with the levels of xx
+      {
+        median.surv2 <- merge(col.dat,median.surv,by.x=1,by.y=1,all.x=F,all.y=T,sort=F)#this gives the legend color
+        
+        #median.surv <- merge(median.surv,col.dat,by.x=1,by.y=1,all.x=T,all.y=F,sort=F)
+        ###get plot line color and lty for lines in the plot
+        temp.merge.res <- merge(plot.strata,median.surv2,by=1,all.x=T,all.y=T,sort=F)##this gives the same order as in "fit0" object
+        plot.col <- temp.merge.res$col
+        plot.lty <- temp.merge.res$lty
+        if("Levels.label"%in%names(temp.merge.res))  temp.merge.res$Levels <- median.surv2$Levels <- temp.merge.res$Levels.label
+        ###get plot line color and lty for lines in the legend
+        col <- median.surv2$col
+        if("lty"%in%names(median.surv2)) lty <- median.surv2$lty
+        ###
+        #cat("plot.col=\n")
+        #print(plot.col)
+        #cat("plot.lty=\n")
+        #print(plot.lty)
+        #cat("col=\n")
+        #print(col)
+        #cat("lty=\n")
+        #print(lty)
+        
+      }
+    }
+    
+    if(!is.null(col.dat)) median.surv <- median.surv2## 
+    #cat("med.surv\n")
+    #print(median.surv)
+    
+    ###########change the label for Levels 06/02/2016
+    if(!is.null(level.label)) median.surv$Levels <- as.character(factor(median.surv$Levels,labels=level.label))##change the levels (e.g., 0/1) into desired labels (e.g., WT/MT)
+    #################
+    
+    if(plot)
+    {
+      plot.col <- col
+      if(!is.null(file0)) pdf(file0,height=12,width=12)
+      par(pty="s")
+      #survplot(fit0,lwd=2, ,...)                        
+      
+      if(missing(col) |is.null(col)) plot.col <- col <- (nrow(median.surv)+1):2 ###the last level will be red, second last be green, etc
+      #col[col==3] <- 1 ##do not use red and green together, replace green by 1, added 07/25/2011
+      if(missing(lty) |is.null(lty)) plot.lty <- lty <- 1:nrow(median.surv)
+      #if(missing(cex.lab)) cex.lab <- 3
+      #if(missing(cex.axis)) cex.axis <- 2
+      #if(missing(font.axis)) font.axis <- 2
+      
+      #plot(fit0,col=col,lty=lty,font=2,font.axis=2,lwd=2,cex=1.5,cex.lab=3,cex.axis=2,...)###usually code low expression as 0(green),high as 1(red),lty=rep(1,nlevel)
+      plot(fit0,col=plot.col,lty=plot.lty,font.axis=2,lwd=4,font=2,cex=1.5,cex.lab=1.5,cex.axis=1.5,font.lab=2,...)
+      #legend(quantile(OS,prob=0.04),0.10,legend=paste("P=",formatC(pval0),sep=""),bty="n",cex=1.7)
+      #survplot(fit0,col=col,lty=1:nlevel,lwd=2,n.risk=T,time.inc=seq(0,60,by=10),...)##add n.event and n.risk
+      if(legend)
+      {
+        if(is.null(strata.var))
+        {
+          #Add.Legend(factor(xx),obj=fit0,unit=unit,digit=4,medSurv.inLegend=F,col=col)
+          ##use locator()
+          #legend(locator(),legend=levels(factor(xx)),col=col,lty=1:nlevel,lwd=2,bty="n",cex=2)##lty=c(1:nlevel,NA)
+          #legend(locator(),legend=paste("P-value: ",format.pval(pval0,digits=3,eps=1e-03),sep=""),bty="n",cex=2)
+          ##automatic
+          
+          #legend0 <- levels(factor(xx))
+          #if(setequal(sort(tolower(levels(xx))),c("high","low","med")) | setequal(sort(tolower(levels(xx))),c("indeterminate","resistant","sensitive")))##we have reordered the levels, but median.surv by alphabetical order
+          #  {
+          #    sort.idx0 <- sapply(legend0,function(xx) grep(xx, median.surv$Levels))##median survival (in alphabetic order)
+          #    median.surv <- median.surv[sort.idx0,]
+          #  }
+          
+          legend0 <- paste(median.surv$Levels,"(event/n:",median.surv$event,"/",median.surv$n, ",med=",round(median.surv$Median,2), ",", round(median.surv$CI.lower,2),"~", round(median.surv$CI.upper,2),")", sep="")##add median surv time
+          #legend0 <- paste(median.surv$Levels,"(",median.surv$event,"/",median.surv$n,")",sep="")
+          #legend0 <- unlist(lapply(strsplit(legend0,"="),function(xx) xx[length(xx)]))##comment this line at 05/14/2015
+          #legend(quantile(OS,prob=0.04),0.1,legend=paste("P=",my.formatP(pval0),sep=""),bty="n",cex=1.7)###y pos=0.1                                      
+          if(nrow(HR)==1)
+          {
+            legend(legend.loc,legend=c(legend0,paste("P=",my.formatP(pval0),sep=""),paste("HR=",HR[1,"95%CI"],sep="")),col=c(col,"black"),lty=c(lty,NA,NA),lwd=2,bty="n",cex=legend.cex,text.font=2)##also print HR if only 2 levels or numerical
+            #legend("topright",legend=c(legend0,paste("P=",my.formatP(pval0),sep=""),paste("HR=",HR[1,"95%CI"],sep="")),col=c(col,"black"),lty=c(lty,NA,NA),lwd=2,bty="n",cex=legend.cex)##also print HR if only 2 levels or numerical
+          }else if(length(grep("resistant",rownames(HR)))>=1) legend("topright",legend=c(legend0,paste("P=",my.formatP(pval0),sep=""),paste("HR(i)=",HR[1,"95%CI"]," p=", my.formatP(HR[1,"Pvalue"]),sep=""),paste("HR(r)=",HR[2,"95%CI"]," p=", my.formatP(HR[2,"Pvalue"]),sep="")),col=c(col,"black","black"),lty=c(lty,NA,NA,NA),lwd=2,bty="n",cex=legend.cex,text.font=2)##also print HR if only 2 levels or numerical
+          else
+          {
+            legend(legend.loc,legend=c(legend0,paste("P=",my.formatP(pval0),sep="")),col=c(col,"black"),lty=c(lty,NA),lwd=2,bty="n",cex=legend.cex,text.font=2)##bottomleft
+          }
+          
+          
+        }else
+        {
+          legend0 <- median.surv$Levels
+          ###replace strata(strata.var)= by nothing
+          legend0 <- gsub("strata(strata.var)=","",legend0,fixed=T)
+          
+          legend0 <- paste(legend0,"(",median.surv$event,"/",median.surv$n,")",sep="")
+          #legend("bottomleft",legend=c(legend0,paste("P=",my.formatP(pval0),sep="")),col=c(col,"black"),lty=c(lty,NA),lwd=2,bty="n",cex=legend.cex,text.font=2)#bottomleft
+          #legend(10,0.3,legend=c(legend0,paste("P=",my.formatP(pval0),sep="")),col=c(col,"black"),lty=c(lty,NA),lwd=2,bty="n",cex=legend.cex)
+          
+          if(nrow(HR)==1)
+          {
+            legend(legend.loc,legend=c(legend0,paste("P=",my.formatP(pval0),sep=""),paste("HR=",HR[1,"95%CI"],sep="")),col=c(col,"black"),lty=c(lty,NA,NA),lwd=2,bty="n",cex=legend.cex,text.font=2)##also print HR if only 2 levels or numerical
+            #legend("bottomleft",legend=c(legend0,paste("P=",my.formatP(pval0),sep=""),paste("HR=",HR[1,"95%CI"],sep="")),col=c(col,"black"),lty=c(lty,NA,NA),lwd=2,bty="n",cex=legend.cex)##also print HR if only 2 levels or numerical
+          }else if(length(grep("resistant",rownames(HR)))>=1) legend("topright",legend=c(legend0,paste("P=",my.formatP(pval0),sep=""),paste("HR(i)=",HR[1,"95%CI"]," p=", my.formatP(HR[1,"Pvalue"]),sep=""),paste("HR(r)=",HR[2,"95%CI"]," p=", my.formatP(HR[2,"Pvalue"]),sep="")),col=c(col,"black","black"),lty=c(lty,NA,NA,NA),lwd=2,bty="n",cex=legend.cex,text.font=2)##also print HR if only 2 levels or numerical
+          else
+          {
+            legend(legend.loc,legend=c(legend0,paste("P=",my.formatP(pval0),sep="")),col=c(col,"black"),lty=c(lty,NA),lwd=2,bty="n",cex=legend.cex,text.font=2)##bottomleft
+          }
+          
+        }
+        
+      }
+      if(!is.null(file0)) dev.off()
+    }
+    
+    
+    #if(!is.null(file0)) dev.print(postscript,file0)
+    if(!is.null(file0)) write.table(median.surv,file=paste("medianSurv_",strsplit(file0,".pdf")[1],".csv",sep=""),sep=",",col.names=T,row.names=F)
+  }
+  return(list(medianCutoff=cutoff,pval=pval0,median.survival=median.surv,HR=HR))
+}
+
+
+
+#####################For a grouping variables with >=3 levels, find out the pairwise log rank P value
+Pairwise.LogRank.Pval <- function(DFS,Event,xtile.Grp,file0=NULL,lty=NULL,col=NULL,cutoff=NULL,...)
+{
+  ##DFS, Event: survival time and event(censoring, 0=censoring,1=event)
+  ##xtile.Grp: the grouping variable
+  ##...:options for the LogRank.Pvalue.KM function such as xlab="RFS (yrs)", plot=T,legend=T,color= etc
+  ##file0: a **.pdf file name to save the pairwise KM curves
+  
+  all.out0 <- NULL
+  grp <- sort(unique(xtile.Grp))
+  if(!is.null(file0)) pdf(file0)
+  for(jj in 1:(length(grp)-1))
+  {
+    for(kk in (jj+1):length(grp))
+    {
+      grp1 <- as.character(grp[jj])
+      grp2 <- as.character(grp[kk])
+      cat("grp1=",as.character(grp1),"\t grp2=",as.character(grp2),"\n")
+      RFS.geneGrp2 <- LogRank.Pvalue.KM(DFS[xtile.Grp%in%c(grp1,grp2)],Event[xtile.Grp%in%c(grp1,grp2)],droplevels(xtile.Grp[xtile.Grp%in%c(grp1,grp2)]),...)#,plot=T,xlab="RFS (yrs)",legend=T,main="xtile Grouping",col=c(3,4,2))## P-value= 1.145745e-08
+      #print(RFS.geneGrp2)
+      out0 <- data.frame(Grp1=grp1,Grp2=grp2,HR=RFS.geneGrp2$HR$"95%CI",HR.P=RFS.geneGrp2$HR$Pvalue,LogRank.P=RFS.geneGrp2$pval)
+      all.out0 <- rbind(all.out0,out0)
+    }
+  }
+  if(!is.null(file0)) dev.off()
+  return(all.out0)
+  
+}
+
+##################################End of function collections###########################
+
+
+#############################################
+
+
+
+
+
+###############################################
+#Explore SGLT2i using cgdsr package
+################################################
+
+###################################################################################
+# Block 1 : install and load in packages
+###################################################################################
+
+##install.packages('cgdsr')##install from cran
+
+
+##installfrom github
+setRepositories(ind=1:6)
+options(repos="http://cran.rstudio.com/")
+if(!require(devtools)) { install.packages("devtools") }
+library(devtools) 
+#install_github("cBioPortal/cgdsr")
+
+##load cgdsr
+library(cgdsr)
+
+###################################################################################
+# Block 2 : help on the package documentation
+###################################################################################
+#help('cgdsr')
+#help('CGDS')
+
+###################################################################################
+# Block 3 : Create CGDS object and test connection
+###################################################################################
+mycgds = CGDS("http://www.cbioportal.org/")
+
+###################################################################################
+# Block 4 : Get list of cancer studies at server
+###################################################################################
+study.list <- getCancerStudies(mycgds)
+str(study.list)
+study.list
+
+###################################################################################
+# Block 4 : Get available case lists (collection of samples) for a given cancer study,
+# We want to use the TCGA RNAseq data on CRC, pancreas and liver
+###################################################################################
+
+#####1. TCGA study
+TCGA.study.idx <- grep("TCGA",study.list$name,ignore.case=F)
+TCGA.study.list <- study.list[TCGA.study.idx,]##we will use 12 and 57 (I guess
+TCGA.study.list
+write.table(TCGA.study.list,file="TCGAstudyList.csv",sep=",",col.names=T,row.names=F)
+##now open the file to check on the TCGA studies
+
+##we will use the TCGA pan cancer normalized data 
+pancan.idx=grep("(TCGA, PanCancer Atlas)", TCGA.study.list$name)
+TCGA_pancan.study.list = TCGA.study.list[pancan.idx,]
+TCGA_pancan.study.list
+
+dim(TCGA_pancan.study.list)##32 TCGA pan-cancer studies
+
+####The relevant-to-our-project cancer_study_id (all possible cohorts)
+##(1)the CRC TCGA datasets
+#coadread_tcga
+#coadread_tcga_pub
+#coadread_tcga_pan_can_atlas_2018
+#####
+
+##(2)the liver TCGA datasets
+#lihc_tcga
+#lihc_tcga_pan_can_atlas_2018
+
+##(3) pancreas TCGA datasets
+#paad_tcga
+#paad_tcga_pan_can_atlas_2018
+
+
+#####2.identify the TCGA study on CRC, liver, pancreas (use the pancancer datasets or the individual cohorts) 
+
+##use pan can data sets and save results to "pancancer" folder: has more samples and clinic data in unified format
+wd1=paste(wd, "pancancer",sep="/")
+dir.create(wd1)
+setwd(wd1)
+
+crc_ID = "coadread_tcga_pan_can_atlas_2018"
+liver_ID = "lihc_tcga_pan_can_atlas_2018"
+pancreas_ID = "paad_tcga_pan_can_atlas_2018"
+
+
+##use the non-pancancer data: the non-pancancer has mRNA from microarray and fewer samples
+# wd1=paste(wd, "non_pancancer",sep="/")
+# dir.create(wd1)
+# setwd(wd1)
+#  
+# crc_ID = "coadread_tcga"#crc_ID = "coadread_tcga_pub"
+# liver_ID = "lihc_tcga"
+# pancreas_ID = "paad_tcga"
+
+
+###################################################################
+##3. get all samples' case ID in each of the cancer studies
+#####################################################################
+
+##uncomment the cohort for analyses and comment the other two cohorts
+#cohort = "CRC"; studyID=crc_ID
+cohort = "liver"; studyID=liver_ID
+#cohort = "pancreas"; studyID=pancreas_ID
+
+wd2= paste(wd1,cohort,sep="/"); dir.create(wd2);setwd(wd2)
+
+########################
+###3.1 CRC TCGA study
+##########################
+
+##(1) Get CRC all available case lists
+caselist <- cgdsr::getCaseLists(mycgds,studyID)##all BC samples' case ID of provisional
+str(caselist)
+caselist[,1:3]
+
+caselist$case_list_description
+
+
+##(2) Get the RNA seq data profife ID
+
+mrna.idx <- grep("RNA Seq V2", caselist$case_list_name)
+mrna.idx
+caselist$case_list_description[mrna.idx]##592 RNAseq V2 samples
+
+#caselist[mrna.idx,]
+
+caselistID <- caselist$case_list_id[mrna.idx]
+caselistID
+#"coadread_tcga_pan_can_atlas_2018_rna_seq_v2_mrna"
+
+caseID <- caselist$case_ids[mrna.idx]
+
+id = unlist(strsplit(caseID," "))
+length(id)##592 samples with CRC RNAseq V2 data
+
+
+##(3) get all available RNAseq V2 dataset genetic profile ID
+profileID <- cgdsr::getGeneticProfiles(mycgds,studyID)
+profileID
+write.csv(profileID,file=paste(cohort,"_RNAseq_ProfileID.csv",sep=""),row.names=F)
+
+##according to their FAQ, cbioportal Z-score is defined: (a gene's expression-mean expression of diploid tumors of the gene)/sd of the expression of diploid tumors of the gene
+##we will use the z-score
+#profileID.RNAseqZscore <- with(profileID,genetic_profile_id[genetic_profile_name=="mRNA expression z-scores relative to diploid samples (RNA Seq V2 RSEM)"]) 
+profileID.RNAseqZscore = profileID %>% dplyr::filter(genetic_profile_name=="mRNA expression z-scores relative to diploid samples (RNA Seq V2 RSEM)") %>% dplyr::select(genetic_profile_id)
+profileID.RNAseqZscore =profileID.RNAseqZscore [1,1]
+                                                     
+
+##(4). pull the gene expression level of the target genes from each cancer dataset
+SGLT2 <- cgdsr::getProfileData(mycgds,GeneSymbol, profileID.RNAseqZscore,caselistID)
+head(SGLT2) ##SGLT1 alias is SLC5A1; SGLT2 alias SLC5A2, 
+
+SGLT2 = data.frame(PID= rownames(SGLT2), SGLT1=as.numeric(SGLT2[,1]),SGLT2=as.numeric(SGLT2[,2]))
+head(SGLT2)
+dim(SGLT2)##592*2
+boxplot(SGLT2$SGLT1,ylab="SGLT1 RNAseq Z-score")
+hist(SGLT2$SGLT1,xlab="SGLT1 RNAseq Z-score",main="")
+
+boxplot(SGLT2$SGLT2,ylab="SGLT2 RNAseq Z-score")
+hist(SGLT2$SGLT2,xlab="SGLT2 RNAseq Z-score",main="")
+
+
+
+##(5) get the clinical data
+clinic = cgdsr::getClinicalData(mycgds, caseList=caselist[1,1])
+dim(clinic)
+head(clinic)
+clinic = clinic %>% dplyr::bind_cols(PID=rownames(clinic))
+
+##(6) merge the SGLT2 gene expression  with clinic data
+clinic = clinic %>% dplyr::inner_join(SGLT2, by="PID")
+dim(clinic)
+
+##survivla data: (DFS_months, DFS_STATUS), (OS_MONTHS, OS_STATUS)
+clinic[clinic==""]=NA  ##set the blank space values as missing values
+names(clinic)
+#save the data to wd
+write.csv(clinic,file=paste(cohort,"_dat.csv",sep=""),row.names=F)
+
+boxplot(SGLT1~CENTER,dat=clinic)#no obvious difference across centers
+
+boxplot(SGLT2~CENTER,dat=clinic)#no obvious difference across centers
+
+##(7) check on relevant variables
+###check survival data
+##how many missing data
+apply(clinic[,c("OS_MONTHS", "OS_STATUS", "DFS_MONTHS", "DFS_STATUS","DSS_MONTHS","DSS_STATUS", "PFS_MONTHS", "PFS_STATUS")],2,function(xx) sum(!is.na(xx)))
+##NOTE: there are too many missing in DFS_MONTHS, so skip DFS
+
+##summary on survival data
+apply(clinic[,c("OS_MONTHS",  "DFS_MONTHS", "DSS_MONTHS", "PFS_MONTHS")],2, summary) 
+##tabulate survival status
+apply(clinic[,c("OS_STATUS", "DFS_STATUS","DSS_STATUS", "PFS_STATUS")],2, table)
+
+clinic %>% dplyr::count(OS_STATUS)
+clinic %>% dplyr::count(DFS_STATUS)
+clinic %>% dplyr::count(DSS_STATUS)
+clinic %>% dplyr::count(PFS_STATUS)
+
+##check on race: AA or Alaska Native only has 1, ignore in the future
+clinic %>% dplyr::count(RACE)
+
+##check on ethnicity: too few hispanic or latino
+clinic %>% dplyr::count(ETHNICITY)
+
+##check on overall stage
+clinic %>% dplyr::count(AJCC_PATHOLOGIC_TUMOR_STAGE)#clinic %>% dplyr::count(AJCC_STAGING_EDITION)
+clinic$Stage <- as.factor(clinic$AJCC_PATHOLOGIC_TUMOR_STAGE)
+levels(clinic$Stage) <- list("STAGE I"=c("STAGE I","STAGE IA","STAGE IB","STAGE IC"),"STAGE II"=c("STAGE II","STAGE IIA","STAGE IIB","STAGE IIC") ,"STAGE III"=c("STAGE III","STAGE IIIA","STAGE IIIB","STAGE IIIC"), "STAGE IV"=c("STAGE IV","STAGE IVA","STAGE IVB","STAGE IVC"))
+table(clinic$AJCC_PATHOLOGIC_TUMOR_STAGE, clinic$Stage)
+
+clinic %>% dplyr::count(AJCC_PATHOLOGIC_TUMOR_STAGE,AJCC_STAGING_EDITION)## there are 2nd, 5th, 6th and 7th edition of AJCC staging, not consistent
+
+##check on grade #no grade here
+clinic %>% dplyr::count(Grade) ##CRC does not have Grade in clinic data!
+
+##check on other M,N and T stage
+clinic %>% dplyr::count(PATH_M_STAGE)
+clinic %>% dplyr::count(PATH_N_STAGE)                             
+clinic %>% dplyr::count(PATH_T_STAGE)##Tis (Tumour in situ)
+
+clinic$T_Stage <- as.factor(clinic$PATH_T_STAGE)
+levels(clinic$T_Stage) <- list("T1"=c("T1","T1A","T1B","T1C"),"T2"=c("T2","T2A","T2B","T2C") ,"T3"=c("T3","T3A","T3B","T3C"), "T4"=c("T4","T4A","T4B","T4C"))
+table(clinic$T_Stage, clinic$PATH_T_STAGE,useNA="ifany")##TIS (usually in situ cancer or pre-cancer) has too few, put as NA
+
+clinic %>% dplyr::count(T_Stage)
+
+##check on sex
+clinic %>% dplyr::count(SEX)
+
+
+for(geneID in GeneSymbol)
+{
+  ##(8) generate violin boxplots
+  if("Stage" %in% colnames(clinic)) Plot_violin_boxplot(data=clinic, geneID=geneID,covariateID="Stage", cohort=cohort)
+  if("RACE" %in% colnames(clinic)) Plot_violin_boxplot(data=subset(clinic,subset= (!is.na(RACE) & RACE!="American Indian or Alaska Native")),geneID=geneID, covariateID="RACE", cohort=cohort)
+  if("Grade" %in% colnames(clinic)) Plot_violin_boxplot(data=Grade, geneID=geneID,covariateID="Grade", cohort=cohort)
+
+
+   ##(9) generate survival KM curves
+  SurvivalAnalysis(dat=clinic, geneID=geneID, survID="OS_MONTHS",eventID="OS_STATUS",cohort=cohort,xlab="Overall Survival (months)",legend.loc="topright")
+  SurvivalAnalysis(dat=clinic, geneID=geneID,survID="DSS_MONTHS",eventID="DSS_STATUS",cohort=cohort,xlab="Disease Specific Survival (months)",legend.loc="topright")
+  SurvivalAnalysis(dat=clinic, geneID=geneID,survID="DFS_MONTHS",eventID="DFS_STATUS",cohort=cohort,xlab="Disease Specific Survival (months)",legend.loc="topright")
+  #SurvivalAnalysis(dat=clinic, survID="PFS_MONTHS",eventID="PFS_STATUS",cohort=cohort,xlab="Progression Free Survival (months)",legend.loc="topright")
+}
+
+
+
+
+######################################END#################################
+
+
+
+
+##############NO USE for now##################
+
+###################################################################################
+#############Explore TCGA data set using RTCGAToolbox#############################
+##################################################################################
+#BiocManager::install("RTCGAToolbox")
+library(RTCGAToolbox)
+
+##Joe downloaded the data matrix from  https://gdc.cancer.gov/about-data/publications/PanCan-CellOfOrigin
+##TCGA pan cancer 10000 tumor RNA-seq v2 RSEM data (TCGA, Pan Cancer Atlas) Cell 2018 gene expression data downloaded by Joe stored in Box
+
+#TCGA_luad = data.table::fread("W:/Jingqin/JosephIppolito/Lung cancer metabolite Sex difference/Data/luad_tcga_pan_can_atlas_2018/data_RNA_Seq_v2_mRNA_median_all_sample_Zscores.txt",header=T)##read in top 100 rows for now
+
+##can't even read in first 5 lines??
+#panCan = readxl::read_excel("C:/Users/jingqinluo/Box/Sex Differences in Lung Cancer/TCGA PanCan Data/EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.xlsx", sheet=1, n_max=5)
+
+#panCan = data.table::fread("C:/Users/jingqinluo/Box/Sex Differences in Lung Cancer/TCGA PanCan Data/EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.xlsx", nrow=10)
+
+
+###I have to access each cancer types' panCancer data myself, not using Joe's downloaded data matrix#####
+
+##1. check datasets (all are cancer)##see https://portal.gdc.cancer.gov/ for cancer coding; 	
+cancer = getFirehoseDatasets() ## COADREAD=  COAD=Colon Adenocarcinoma; LIHC=Liver Hepatocellular Carcinoma; READ = Rectum Adenocarcinoma
+# [1] "ACC"      "BLCA"     "BRCA"     "CESC"     "CHOL"     "COADREAD" "COAD"    
+# [8] "DLBC"     "ESCA"     "FPPP"     "GBMLGG"   "GBM"      "HNSC"     "KICH"    
+# [15] "KIPAN"    "KIRC"     "KIRP"     "LAML"     "LGG"      "LIHC"     "LUAD"    
+# [22] "LUSC"     "MESO"     "OV"       "PAAD"     "PCPG"     "PRAD"     "READ"    
+# [29] "SARC"     "SKCM"     "STAD"     "STES"     "TGCT"     "THCA"     "THYM"    
+# [36] "UCEC"     "UCS"      "UVM"     
+
+##we want to focus on CRC, liver, pancreatic cancer
+
+cancer = c("COADREAD", "LIHC", "PAAD")
+##2. check dates and we will use the most recent date "20160128"
+getFirehoseRunningDates()
+date0 = getFirehoseRunningDates(last = 1)
+
+##3. download datasets: clinical and RNAseq v2 RSEM
+cancer0 = cancer[28] ##READ
+cat("cancer=", cancer0,"\n")
+dat <- getFirehoseData(dataset=cancer0, runDate="20160128",
+                       forceDownload=TRUE, clinical=TRUE, RNASeq2GeneNorm=TRUE, RNAseq2Norm="normalized_count" )
+
+##extract clinic data from
+clinic = biocExtract(dat, "clinical")
+head(clinic)
+c("days_to_last_followup","tumor_tissue_site", "pathology_T_stage", "pathology_N_stage", "pathology_M_stage","gender","ethnicity")
+
+print(apply(clinic,2,table))
+biocExtract(dat, "RNASeq2GeneNorm")
+
+
+###################################################################################
+#############Explore TCGA data set using RTCGAbiolinks#############################
+##################################################################################
+
+##check on available projects in GDC
+proj=TCGAbiolinks:::getGDCprojects()
+proj = proj %>% data.frame()
+str(proj)
+fwrite(proj,file="TCGA_projects.csv",row.names=F) 
+proj$project_id[grep("TCGA-",proj$project_id)]
+
+###we will grep TCGA-COAD (colon adenocarcinom), TCGA-READ (rectum adeno), TCGA-LIHC (liver cancer), TCGA-PAAD (pancreas)
+query.clinic.COAD = GDCquery(project = "TCGA-COAD",
+                             legacy = TRUE,
+                             data.category = "Clinical",
+                             data.format="TSV",
+                             sample.type = "Primary Tumor")
+View(getResults(query.clinic.COAD))
+#GDCdownload(query.clinic.COAD)
+
+query.exp.COAD = GDCquery(project = "TCGA-COAD",
+                          legacy = TRUE,
+                          data.category = "Gene expression",
+                          data.type = "Gene expression quantification",
+                          #platform = "Illumina HiSeq",
+                          file.type = "results",
+                          sample.type = "Primary Tumor")
+
+View(getResults(query.exp.COAD))
+
+#
+query.exp.COAD.2=query.exp.COAD
+tmp=query.exp.COAD.2$results[[1]]
+tmp=tmp[which(!duplicated(tmp$cases)),]
+query.exp.COAD.2$results[[1]]=tmp
+
+GDCdownload(query.exp.COAD.2, directory = "GDCdata_COAD_LUO", files.per.chunk = 100)
+dataAssy_COAD_LUO_counts <- GDCprepare(query.exp.COAD.2, directory = "TCGA/GDCdata_COAD_LUO", summarizedExperiment = F)
+#GDCdownload(query.exp.COAD)
+exp.COAD = GDCprepare(query = query.exp.COAD, save = TRUE, save.filename = "COADExp.
+rda")
+
+exp.READ = GDCprepare(query = query.exp.READ, save = TRUE, save.filename = "READExp.
+rda")
+exp.COAD.READ = SummarizedExperiment::cbind(exp.COAD, exp.READ)
